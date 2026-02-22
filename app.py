@@ -1,11 +1,20 @@
 import io
 from typing import Optional, Tuple
 
-import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageFilter
+
+try:
+    import cv2  # type: ignore
+
+    CV2_AVAILABLE = True
+    CV2_IMPORT_ERROR = ""
+except Exception as import_error:
+    cv2 = None
+    CV2_AVAILABLE = False
+    CV2_IMPORT_ERROR = str(import_error)
 
 
 st.set_page_config(page_title="Image Enhancement & Analytics Portal", layout="wide")
@@ -35,13 +44,17 @@ def apply_enhancements(
     enhanced = ImageEnhance.Contrast(enhanced).enhance(contrast)
     enhanced = ImageEnhance.Sharpness(enhanced).enhance(sharpness)
 
-    image_array = pil_to_rgb_array(enhanced)
-
     if blur_strength > 0:
-        k = blur_strength if blur_strength % 2 == 1 else blur_strength + 1
-        image_array = cv2.GaussianBlur(image_array, (k, k), 0)
+        if CV2_AVAILABLE:
+            image_array = pil_to_rgb_array(enhanced)
+            k = blur_strength if blur_strength % 2 == 1 else blur_strength + 1
+            image_array = cv2.GaussianBlur(image_array, (k, k), 0)
+            enhanced = rgb_array_to_pil(image_array)
+        else:
+            enhanced = enhanced.filter(ImageFilter.GaussianBlur(radius=max(1, blur_strength // 2)))
 
-    if denoise_strength > 0:
+    if denoise_strength > 0 and CV2_AVAILABLE:
+        image_array = pil_to_rgb_array(enhanced)
         # Keep API simple: use a single slider for all strength params.
         image_array = cv2.fastNlMeansDenoisingColored(
             image_array,
@@ -51,8 +64,9 @@ def apply_enhancements(
             7,
             21,
         )
+        enhanced = rgb_array_to_pil(image_array)
 
-    return rgb_array_to_pil(image_array)
+    return enhanced
 
 
 def apply_transformations(
@@ -86,9 +100,11 @@ def apply_filter(image: Image.Image, filter_name: str, threshold_val: int) -> Im
     rgb = pil_to_rgb_array(image)
 
     if filter_name == "Edge Detection (Canny)":
-        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-        edges = cv2.Canny(gray, 100, 200)
-        return Image.fromarray(edges)
+        if CV2_AVAILABLE:
+            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+            edges = cv2.Canny(gray, 100, 200)
+            return Image.fromarray(edges)
+        return image.convert("L").filter(ImageFilter.FIND_EDGES)
 
     if filter_name == "Sepia":
         sepia_matrix = np.array(
@@ -98,8 +114,8 @@ def apply_filter(image: Image.Image, filter_name: str, threshold_val: int) -> Im
         return rgb_array_to_pil(np.clip(sepia, 0, 255))
 
     if filter_name == "Binary Threshold":
-        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-        _, binary = cv2.threshold(gray, threshold_val, 255, cv2.THRESH_BINARY)
+        gray = np.array(image.convert("L"))
+        binary = np.where(gray > threshold_val, 255, 0).astype(np.uint8)
         return Image.fromarray(binary)
 
     return image
@@ -125,7 +141,7 @@ def figure_rgb_histogram(image: Image.Image):
     fig, ax = plt.subplots(figsize=(7, 4))
     colors = ["red", "green", "blue"]
     for idx, color in enumerate(colors):
-        hist = cv2.calcHist([rgb], [idx], None, [256], [0, 256])
+        hist, _ = np.histogram(rgb[:, :, idx].ravel(), bins=256, range=(0, 256))
         ax.plot(hist, color=color, label=f"{color.upper()}")
     ax.set_title("RGB Histogram")
     ax.set_xlabel("Pixel Intensity")
@@ -224,6 +240,13 @@ def reset_enhancement_state():
 st.title("Image Enhancement & Analytics Portal")
 st.caption("A simple Streamlit app for basic image editing, analysis, and image/PDF conversion.")
 
+if not CV2_AVAILABLE:
+    st.warning(
+        "OpenCV could not be loaded in this environment. "
+        "Some features use fallback behavior (blur, edge detection, thresholding). "
+        f"Details: {CV2_IMPORT_ERROR}"
+    )
+
 uploaded_image_file = st.file_uploader(
     "Upload an image (PNG/JPG/JPEG)", type=["png", "jpg", "jpeg"]
 )
@@ -266,6 +289,8 @@ with enhancements_tab:
             st.slider("Sharpness", 0.0, 3.0, key="sharpness", step=0.1)
             st.slider("Blur (Gaussian)", 0, 31, key="blur", step=1)
             st.slider("Noise Removal", 0, 30, key="denoise", step=1)
+            if not CV2_AVAILABLE:
+                st.caption("Noise removal requires OpenCV and is disabled in fallback mode.")
             if st.button("Reset to Original", use_container_width=True):
                 reset_enhancement_state()
 
