@@ -1,4 +1,4 @@
-# Image Enhancement & Analytics Portal
+# Pixora - Image Enhancement & Analytics Portal
 
 A Streamlit-based web application for image editing, enhancement, visualization, and simple PDF conversion.
 Built using Python, Streamlit, OpenCV, Pillow, NumPy, and Matplotlib.
